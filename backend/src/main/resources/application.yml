@@ -38,3 +38,9 @@ app:
 logging:
   level:
     com.example.chatapp: INFO
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
