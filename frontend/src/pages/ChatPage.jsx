@@ -1,6 +1,6 @@
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
-import { Image, Send, Video } from 'lucide-react';
+import { Camera, Image, RefreshCw, Send, Video, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import api, { API_URL } from '../api/client.js';
@@ -15,7 +15,12 @@ export default function ChatPage() {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraError, setCameraError] = useState('');
+  const [cameraFacingMode, setCameraFacingMode] = useState('environment');
   const bottomRef = useRef(null);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
   const stompRef = useRef(null);
 
   const otherUser = useMemo(() => chat?.participants?.find((participant) => participant.id !== user.id), [chat, user.id]);
@@ -46,6 +51,10 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  useEffect(() => {
+    return () => stopCamera();
+  }, []);
+
   const sendMessage = async (payload) => {
     const body = { chatId: Number(chatId), ...payload };
     if (stompRef.current?.connected) {
@@ -66,6 +75,11 @@ export default function ChatPage() {
   const uploadAndSend = async (event, type) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    await sendFile(file, type);
+    event.target.value = '';
+  };
+
+  const sendFile = async (file, type) => {
     setUploading(true);
     try {
       const data = new FormData();
@@ -74,8 +88,62 @@ export default function ChatPage() {
       await sendMessage({ type, mediaUrl: response.data.url });
     } finally {
       setUploading(false);
-      event.target.value = '';
     }
+  };
+
+  const stopCamera = () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  };
+
+  const openCamera = async (facingMode = cameraFacingMode) => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError('Camera is not supported in this browser.');
+      setCameraOpen(true);
+      return;
+    }
+    setCameraOpen(true);
+    setCameraError('');
+    stopCamera();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode },
+        audio: false
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (error) {
+      setCameraError('Camera permission is blocked or unavailable.');
+    }
+  };
+
+  const closeCamera = () => {
+    stopCamera();
+    setCameraOpen(false);
+    setCameraError('');
+  };
+
+  const flipCamera = async () => {
+    const nextMode = cameraFacingMode === 'environment' ? 'user' : 'environment';
+    setCameraFacingMode(nextMode);
+    await openCamera(nextMode);
+  };
+
+  const captureAndSend = async () => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth || !video.videoHeight) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    canvas.toBlob(async (blob) => {
+      if (!blob) return;
+      closeCamera();
+      const file = new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg' });
+      await sendFile(file, 'IMAGE');
+    }, 'image/jpeg', 0.9);
   };
 
   return (
@@ -108,6 +176,9 @@ export default function ChatPage() {
       </section>
 
       <form onSubmit={submit} className="flex items-center gap-2 border-t border-slate-200 p-3">
+        <button type="button" onClick={() => openCamera()} className="rounded-md p-2 hover:bg-slate-100" title="Take photo" disabled={uploading}>
+          <Camera size={21} />
+        </button>
         <label className="rounded-md p-2 hover:bg-slate-100" title="Upload image">
           <Image size={21} />
           <input className="hidden" type="file" accept="image/jpeg,image/png,image/gif" onChange={(e) => uploadAndSend(e, 'IMAGE')} />
@@ -121,6 +192,32 @@ export default function ChatPage() {
           <Send size={21} />
         </button>
       </form>
+
+      {cameraOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4">
+          <div className="w-full max-w-lg rounded-lg bg-white p-3 shadow-xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="font-semibold">Take Photo</h2>
+              <button type="button" onClick={closeCamera} className="rounded-md p-2 hover:bg-slate-100" title="Close camera">
+                <X size={20} />
+              </button>
+            </div>
+            {cameraError ? (
+              <div className="rounded-md bg-red-50 p-4 text-sm text-red-700">{cameraError}</div>
+            ) : (
+              <video ref={videoRef} autoPlay playsInline muted className="aspect-video w-full rounded-md bg-slate-900 object-cover" />
+            )}
+            <div className="mt-3 flex items-center justify-between gap-2">
+              <button type="button" onClick={flipCamera} className="rounded-md border border-slate-300 p-2 hover:bg-slate-100" title="Flip camera">
+                <RefreshCw size={20} />
+              </button>
+              <button type="button" onClick={captureAndSend} disabled={Boolean(cameraError) || uploading} className="rounded-md bg-emerald-600 px-5 py-2 font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300">
+                Capture & Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
